@@ -211,7 +211,17 @@ final class WebPreviewPanel extends JPanel {
         chooser.setSelectedFile(new File(suggestFileName(imageUrl)));
 
         if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            downloadImage(imageUrl, chooser.getSelectedFile(), imageBox);
+            File destination = chooser.getSelectedFile();
+            if (destination.exists()) {
+                int overwrite = JOptionPane.showConfirmDialog(this,
+                        "Tệp đã tồn tại. Bạn có muốn ghi đè không?",
+                        "Xác nhận ghi đè", JOptionPane.YES_NO_OPTION,
+                        JOptionPane.WARNING_MESSAGE);
+                if (overwrite != JOptionPane.YES_OPTION) {
+                    return;
+                }
+            }
+            downloadImage(imageUrl, destination, imageBox);
         }
     }
 
