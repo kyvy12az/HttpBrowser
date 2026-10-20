@@ -40,6 +40,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -63,6 +64,7 @@ final class WebPreviewPanel extends JPanel {
     private volatile String pendingHtml = welcomeHtml();
     private volatile double zoom = 1.0;
     private final List<AccessHistoryEntry> accessHistory = new ArrayList<>();
+    private volatile Consumer<String> locationListener = url -> { };
 
     WebPreviewPanel() {
         super(new BorderLayout());
@@ -77,6 +79,8 @@ final class WebPreviewPanel extends JPanel {
             engine = view.getEngine();
             engine.setJavaScriptEnabled(true);
             configureHistory();
+            engine.locationProperty().addListener(
+                    (observable, oldUrl, newUrl) -> notifyLocationChanged(newUrl));
             engine.getLoadWorker().stateProperty().addListener(
                     (observable, oldState, newState) -> {
                         if (newState == Worker.State.SUCCEEDED) {
@@ -88,6 +92,19 @@ final class WebPreviewPanel extends JPanel {
             ready.set(true);
             engine.loadContent(pendingHtml, "text/html");
         });
+    }
+
+    void setLocationListener(Consumer<String> listener) {
+        locationListener = listener == null ? url -> { } : listener;
+    }
+
+    private void notifyLocationChanged(String url) {
+        if (url == null || url.isBlank()
+                || url.equals("about:blank")
+                || url.startsWith("data:")) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> locationListener.accept(url));
     }
 
     void showHtml(String html, String baseUrl) {
