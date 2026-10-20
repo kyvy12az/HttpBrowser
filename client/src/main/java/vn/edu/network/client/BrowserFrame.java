@@ -163,6 +163,7 @@ final class BrowserFrame extends JFrame {
     }
 
     private void configureEvents() {
+        previewPanel.setLocationListener(urlField::setText);
         methodBox.addActionListener(e -> updatePostState());
         sendButton.addActionListener(e -> sendRequest());
         clearButton.addActionListener(e -> clearResult());
@@ -240,6 +241,9 @@ final class BrowserFrame extends JFrame {
             return;
         }
 
+        if (response.finalUrl() != null && !response.finalUrl().isBlank()) {
+            urlField.setText(response.finalUrl());
+        }
         statusValue.setText(response.statusCode() + " " + response.reasonPhrase());
         statusValue.setForeground(response.statusCode() < 400 ? GREEN : RED);
         typeValue.setText(header(response.headers(), "content-type", "Không xác định"));
