@@ -5,6 +5,7 @@ import javafx.collections.ListChangeListener;
 import javafx.concurrent.Worker;
 import javafx.embed.swing.JFXPanel;
 import javafx.scene.Scene;
+import javafx.scene.input.MouseButton;
 import javafx.scene.web.WebEngine;
 import javafx.scene.web.WebHistory;
 import javafx.scene.web.WebView;
@@ -15,8 +16,10 @@ import javax.swing.JComponent;
 import javax.swing.DefaultListModel;
 import javax.swing.JFileChooser;
 import javax.swing.JList;
+import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
@@ -64,6 +67,9 @@ final class WebPreviewPanel extends JPanel {
     private volatile String pendingHtml = welcomeHtml();
     private volatile double zoom = 1.0;
     private final List<AccessHistoryEntry> accessHistory = new ArrayList<>();
+    private final List<String> navigationHistory = new ArrayList<>();
+    private volatile int navigationIndex = -1;
+    private volatile boolean navigatingHistory;
     private volatile Consumer<String> locationListener = url -> { };
 
     WebPreviewPanel() {
@@ -79,12 +85,19 @@ final class WebPreviewPanel extends JPanel {
             engine = view.getEngine();
             engine.setJavaScriptEnabled(true);
             configureHistory();
+            configureImageContextMenu(view);
             engine.locationProperty().addListener(
                     (observable, oldUrl, newUrl) -> notifyLocationChanged(newUrl));
             engine.getLoadWorker().stateProperty().addListener(
                     (observable, oldState, newState) -> {
                         if (newState == Worker.State.SUCCEEDED) {
                             recordHistory(engine.getLocation(), engine.getTitle());
+                            navigatingHistory = false;
+                            updateNavigationButtons();
+                        } else if (newState == Worker.State.FAILED
+                                || newState == Worker.State.CANCELLED) {
+                            navigatingHistory = false;
+                            updateNavigationButtons();
                         }
                     });
             view.setZoom(zoom);
@@ -221,23 +234,30 @@ final class WebPreviewPanel extends JPanel {
         if (!ready.get() || engine == null) {
             return;
         }
-        Platform.runLater(() -> {
-            WebHistory history = engine.getHistory();
-            int targetIndex = history.getCurrentIndex() + offset;
-            if (targetIndex >= 0 && targetIndex < history.getEntries().size()) {
-                history.go(offset);
+
+        String targetUrl;
+        synchronized (navigationHistory) {
+            int targetIndex = navigationIndex + offset;
+            if (targetIndex < 0 || targetIndex >= navigationHistory.size()) {
+                return;
             }
-            updateNavigationButtons();
-        });
+            navigationIndex = targetIndex;
+            targetUrl = navigationHistory.get(targetIndex);
+            navigatingHistory = true;
+        }
+
+        notifyLocationChanged(targetUrl);
+        updateNavigationButtons();
+        Platform.runLater(() -> engine.load(targetUrl));
     }
 
     private void updateNavigationButtons() {
-        if (engine == null) {
-            return;
+        int currentIndex;
+        int entryCount;
+        synchronized (navigationHistory) {
+            currentIndex = navigationIndex;
+            entryCount = navigationHistory.size();
         }
-        WebHistory history = engine.getHistory();
-        int currentIndex = history.getCurrentIndex();
-        int entryCount = history.getEntries().size();
         SwingUtilities.invokeLater(() -> {
             backButton.setEnabled(currentIndex > 0);
             forwardButton.setEnabled(currentIndex >= 0 && currentIndex < entryCount - 1);
@@ -275,18 +295,32 @@ final class WebPreviewPanel extends JPanel {
                 : title.replaceAll("\\s+", " ").trim();
 
         synchronized (accessHistory) {
-            if (!accessHistory.isEmpty()) {
-                AccessHistoryEntry latest = accessHistory.get(accessHistory.size() - 1);
-                if (latest.url().equals(url)) {
-                    return;
+            if (accessHistory.isEmpty()
+                    || !accessHistory.get(accessHistory.size() - 1).url().equals(url)) {
+                accessHistory.add(new AccessHistoryEntry(
+                        LocalDateTime.now(), normalizedTitle, url));
+                if (accessHistory.size() > MAX_HISTORY_ENTRIES) {
+                    accessHistory.remove(0);
                 }
             }
-            accessHistory.add(new AccessHistoryEntry(
-                    LocalDateTime.now(), normalizedTitle, url));
-            if (accessHistory.size() > MAX_HISTORY_ENTRIES) {
-                accessHistory.remove(0);
+        }
+
+        synchronized (navigationHistory) {
+            if (!navigatingHistory
+                    && (navigationIndex < 0
+                    || !navigationHistory.get(navigationIndex).equals(url))) {
+                while (navigationHistory.size() > navigationIndex + 1) {
+                    navigationHistory.remove(navigationHistory.size() - 1);
+                }
+                navigationHistory.add(url);
+                navigationIndex = navigationHistory.size() - 1;
+                if (navigationHistory.size() > MAX_HISTORY_ENTRIES) {
+                    navigationHistory.remove(0);
+                    navigationIndex--;
+                }
             }
         }
+        updateNavigationButtons();
     }
 
     private String extractTitle(String html) {
@@ -355,6 +389,49 @@ final class WebPreviewPanel extends JPanel {
         }
     }
 
+    private void configureImageContextMenu(WebView view) {
+        view.setContextMenuEnabled(false);
+        view.setOnMousePressed(event -> {
+            if (event.getButton() != MouseButton.SECONDARY || engine == null) {
+                return;
+            }
+
+            try {
+                int x = (int) event.getX();
+                int y = (int) event.getY();
+                String script = """
+                        (function () {
+                            let element = document.elementFromPoint(%d, %d);
+                            while (element && element.tagName !== 'IMG') {
+                                element = element.parentElement;
+                            }
+                            return element ? (element.currentSrc || element.src || '') : '';
+                        })()
+                        """.formatted(x, y);
+                Object result = engine.executeScript(script);
+                String imageUrl = result == null ? "" : result.toString();
+
+                if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+                    event.consume();
+                    SwingUtilities.invokeLater(() ->
+                            showImageContextMenu(imageUrl, x, y));
+                }
+            } catch (Exception exception) {
+                SwingUtilities.invokeLater(() -> showDownloadError(exception));
+            }
+        });
+    }
+
+    private void showImageContextMenu(String imageUrl, int x, int y) {
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem downloadItem = new JMenuItem(
+                "Tải hình ảnh này", ClientIcons.icon("download", 15));
+        downloadItem.addActionListener(event ->
+                chooseDestinationForImage(imageUrl, downloadItem));
+        menu.add(downloadItem);
+        menu.show(fxPanel, x, y);
+    }
+
     private void chooseImageToDownload() {
         if (!ready.get() || engine == null) {
             JOptionPane.showMessageDialog(this, "Trang web chưa tải xong.",
@@ -406,6 +483,10 @@ final class WebPreviewPanel extends JPanel {
         }
 
         String imageUrl = imageBox.getSelectedItem().toString();
+        chooseDestinationForImage(imageUrl, imageBox);
+    }
+
+    private void chooseDestinationForImage(String imageUrl, JComponent owner) {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Chọn vị trí lưu hình ảnh");
         chooser.setSelectedFile(new File(suggestFileName(imageUrl)));
@@ -421,7 +502,7 @@ final class WebPreviewPanel extends JPanel {
                     return;
                 }
             }
-            downloadImage(imageUrl, destination, imageBox);
+            downloadImage(imageUrl, destination, owner);
         }
     }
 
