@@ -7,14 +7,27 @@ import javafx.scene.web.WebEngine;
 import javafx.scene.web.WebView;
 
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JFileChooser;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.KeyStroke;
+import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
 import java.awt.BorderLayout;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Insets;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
+import java.io.File;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class WebPreviewPanel extends JPanel {
@@ -74,6 +87,12 @@ final class WebPreviewPanel extends JPanel {
     private JPanel buildZoomToolbar() {
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 4));
 
+        JButton downloadImageButton = new JButton("Tải ảnh", ClientIcons.icon("image", 15));
+        downloadImageButton.setToolTipText("Tải một hình ảnh đang hiển thị trên trang");
+        downloadImageButton.setMargin(new Insets(3, 10, 3, 10));
+        downloadImageButton.setFocusable(false);
+        downloadImageButton.addActionListener(event -> chooseImageToDownload());
+
         JButton zoomOutButton = new JButton("−");
         zoomOutButton.setToolTipText("Thu nhỏ (Ctrl+-)");
         zoomOutButton.setMargin(new Insets(3, 10, 3, 10));
@@ -91,6 +110,7 @@ final class WebPreviewPanel extends JPanel {
         zoomInButton.setFocusable(false);
         zoomInButton.addActionListener(event -> changeZoom(ZOOM_STEP));
 
+        toolbar.add(downloadImageButton);
         toolbar.add(zoomOutButton);
         toolbar.add(zoomValueButton);
         toolbar.add(zoomInButton);
@@ -132,6 +152,130 @@ final class WebPreviewPanel extends JPanel {
         if (ready.get() && currentView != null) {
             Platform.runLater(() -> currentView.setZoom(zoom));
         }
+    }
+
+    private void chooseImageToDownload() {
+        if (!ready.get() || engine == null) {
+            JOptionPane.showMessageDialog(this, "Trang web chưa tải xong.",
+                    "Chưa thể tải ảnh", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        Platform.runLater(() -> {
+            try {
+                String script = """
+                        Array.from(new Set(
+                            Array.from(document.images)
+                                .map(image => image.currentSrc || image.src)
+                                .filter(url => url.startsWith('http://') || url.startsWith('https://'))
+                        )).join('|||HTTP_BROWSER_IMAGE|||')
+                        """;
+                Object result = engine.executeScript(script);
+                String value = result == null ? "" : result.toString();
+                String[] imageUrls = value.isBlank()
+                        ? new String[0]
+                        : value.split("\\\|\\\|\\\|HTTP_BROWSER_IMAGE\\\|\\\|\\\|");
+
+                SwingUtilities.invokeLater(() -> showImageChooser(imageUrls));
+            } catch (Exception exception) {
+                SwingUtilities.invokeLater(() -> showDownloadError(exception));
+            }
+        });
+    }
+
+    private void showImageChooser(String[] imageUrls) {
+        if (imageUrls.length == 0) {
+            JOptionPane.showMessageDialog(this,
+                    "Không tìm thấy hình ảnh HTTP/HTTPS trong trang hiện tại.",
+                    "Không có hình ảnh", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        JComboBox<String> imageBox = new JComboBox<>(imageUrls);
+        imageBox.setPreferredSize(new Dimension(620, 32));
+        JPanel selectionPanel = new JPanel(new BorderLayout(0, 8));
+        selectionPanel.add(new javax.swing.JLabel(
+                "Chọn hình ảnh muốn tải (" + imageUrls.length + " ảnh):"), BorderLayout.NORTH);
+        selectionPanel.add(imageBox, BorderLayout.CENTER);
+
+        int option = JOptionPane.showConfirmDialog(this, selectionPanel,
+                "Tải hình ảnh", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (option != JOptionPane.OK_OPTION || imageBox.getSelectedItem() == null) {
+            return;
+        }
+
+        String imageUrl = imageBox.getSelectedItem().toString();
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Chọn vị trí lưu hình ảnh");
+        chooser.setSelectedFile(new File(suggestFileName(imageUrl)));
+
+        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            downloadImage(imageUrl, chooser.getSelectedFile(), imageBox);
+        }
+    }
+
+    private void downloadImage(String imageUrl, File destination, JComponent owner) {
+        owner.setEnabled(false);
+        new SwingWorker<Void, Void>() {
+            @Override
+            protected Void doInBackground() throws Exception {
+                HttpClient client = HttpClient.newBuilder()
+                        .followRedirects(HttpClient.Redirect.NORMAL)
+                        .connectTimeout(Duration.ofSeconds(15))
+                        .build();
+                HttpRequest request = HttpRequest.newBuilder(URI.create(imageUrl))
+                        .timeout(Duration.ofSeconds(30))
+                        .header("User-Agent", "SimpleHttpBrowser/1.0 (Java 17)")
+                        .GET()
+                        .build();
+                HttpResponse<byte[]> response = client.send(
+                        request, HttpResponse.BodyHandlers.ofByteArray());
+
+                if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                    throw new IllegalStateException(
+                            "Website trả về HTTP " + response.statusCode());
+                }
+                Files.write(destination.toPath(), response.body());
+                return null;
+            }
+
+            @Override
+            protected void done() {
+                owner.setEnabled(true);
+                try {
+                    get();
+                    JOptionPane.showMessageDialog(WebPreviewPanel.this,
+                            "Đã lưu hình ảnh tại:\n" + destination.getAbsolutePath(),
+                            "Tải ảnh thành công", JOptionPane.INFORMATION_MESSAGE);
+                } catch (Exception exception) {
+                    showDownloadError(exception);
+                }
+            }
+        }.execute();
+    }
+
+    private String suggestFileName(String imageUrl) {
+        try {
+            String path = URI.create(imageUrl).getPath();
+            String fileName = path == null ? "" : path.substring(path.lastIndexOf('/') + 1);
+            fileName = fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+            return fileName.isBlank() ? "image.jpg" : fileName;
+        } catch (Exception exception) {
+            return "image.jpg";
+        }
+    }
+
+    private void showDownloadError(Exception exception) {
+        Throwable cause = exception;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage() == null
+                ? cause.getClass().getSimpleName()
+                : cause.getMessage();
+        JOptionPane.showMessageDialog(this,
+                "Không thể tải hình ảnh.\n" + message,
+                "Tải ảnh thất bại", JOptionPane.ERROR_MESSAGE);
     }
 
     private String prepareHtml(String html, String baseUrl) {
