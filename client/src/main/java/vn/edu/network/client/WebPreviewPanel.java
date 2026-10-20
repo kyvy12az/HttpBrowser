@@ -29,6 +29,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 
 final class WebPreviewPanel extends JPanel {
     private static final double MIN_ZOOM = 0.5;
@@ -174,7 +175,7 @@ final class WebPreviewPanel extends JPanel {
                 String value = result == null ? "" : result.toString();
                 String[] imageUrls = value.isBlank()
                         ? new String[0]
-                        : value.split("\\\|\\\|\\\|HTTP_BROWSER_IMAGE\\\|\\\|\\\|");
+                        : value.split(Pattern.quote("|||HTTP_BROWSER_IMAGE|||"));
 
                 SwingUtilities.invokeLater(() -> showImageChooser(imageUrls));
             } catch (Exception exception) {
