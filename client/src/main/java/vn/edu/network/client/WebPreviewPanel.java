@@ -2,6 +2,7 @@ package vn.edu.network.client;
 
 import javafx.application.Platform;
 import javafx.collections.ListChangeListener;
+import javafx.concurrent.Worker;
 import javafx.embed.swing.JFXPanel;
 import javafx.scene.Scene;
 import javafx.scene.web.WebEngine;
@@ -11,10 +12,14 @@ import javafx.scene.web.WebView;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.DefaultListModel;
 import javax.swing.JFileChooser;
+import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
 import javax.swing.KeyStroke;
+import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import java.awt.BorderLayout;
@@ -30,13 +35,23 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class WebPreviewPanel extends JPanel {
     private static final double MIN_ZOOM = 0.5;
     private static final double MAX_ZOOM = 2.0;
     private static final double ZOOM_STEP = 0.1;
+    private static final int MAX_HISTORY_ENTRIES = 200;
+    private static final DateTimeFormatter HISTORY_TIME =
+            DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
+    private static final Pattern TITLE_PATTERN =
+            Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
 
     private final JFXPanel fxPanel = new JFXPanel();
     private final AtomicBoolean ready = new AtomicBoolean(false);
@@ -47,6 +62,7 @@ final class WebPreviewPanel extends JPanel {
     private volatile WebView webView;
     private volatile String pendingHtml = welcomeHtml();
     private volatile double zoom = 1.0;
+    private final List<AccessHistoryEntry> accessHistory = new ArrayList<>();
 
     WebPreviewPanel() {
         super(new BorderLayout());
@@ -61,6 +77,12 @@ final class WebPreviewPanel extends JPanel {
             engine = view.getEngine();
             engine.setJavaScriptEnabled(true);
             configureHistory();
+            engine.getLoadWorker().stateProperty().addListener(
+                    (observable, oldState, newState) -> {
+                        if (newState == Worker.State.SUCCEEDED) {
+                            recordHistory(engine.getLocation(), engine.getTitle());
+                        }
+                    });
             view.setZoom(zoom);
             fxPanel.setScene(new Scene(view));
             ready.set(true);
@@ -71,6 +93,7 @@ final class WebPreviewPanel extends JPanel {
     void showHtml(String html, String baseUrl) {
         String content = prepareHtml(html, baseUrl);
         pendingHtml = content;
+        recordHistory(baseUrl, extractTitle(html));
         if (ready.get()) {
             Platform.runLater(() -> engine.loadContent(content, "text/html"));
         }
@@ -105,6 +128,12 @@ final class WebPreviewPanel extends JPanel {
         forwardButton.setEnabled(false);
         forwardButton.addActionListener(event -> navigateHistory(1));
 
+        JButton historyButton = new JButton("Lịch sử", ClientIcons.icon("clock-3", 15));
+        historyButton.setToolTipText("Xem lịch sử truy cập");
+        historyButton.setMargin(new Insets(3, 10, 3, 10));
+        historyButton.setFocusable(false);
+        historyButton.addActionListener(event -> showAccessHistory());
+
         JButton downloadImageButton = new JButton("Tải ảnh", ClientIcons.icon("image", 15));
         downloadImageButton.setToolTipText("Tải một hình ảnh đang hiển thị trên trang");
         downloadImageButton.setMargin(new Insets(3, 10, 3, 10));
@@ -130,6 +159,7 @@ final class WebPreviewPanel extends JPanel {
 
         toolbar.add(backButton);
         toolbar.add(forwardButton);
+        toolbar.add(historyButton);
         toolbar.add(downloadImageButton);
         toolbar.add(zoomOutButton);
         toolbar.add(zoomValueButton);
@@ -213,6 +243,98 @@ final class WebPreviewPanel extends JPanel {
         WebView currentView = webView;
         if (ready.get() && currentView != null) {
             Platform.runLater(() -> currentView.setZoom(zoom));
+        }
+    }
+
+    private void recordHistory(String url, String title) {
+        if (url == null || url.isBlank()
+                || url.equals("about:blank")
+                || url.startsWith("data:")) {
+            return;
+        }
+
+        String normalizedTitle = title == null || title.isBlank()
+                ? url
+                : title.replaceAll("\\s+", " ").trim();
+
+        synchronized (accessHistory) {
+            if (!accessHistory.isEmpty()) {
+                AccessHistoryEntry latest = accessHistory.get(accessHistory.size() - 1);
+                if (latest.url().equals(url)) {
+                    return;
+                }
+            }
+            accessHistory.add(new AccessHistoryEntry(
+                    LocalDateTime.now(), normalizedTitle, url));
+            if (accessHistory.size() > MAX_HISTORY_ENTRIES) {
+                accessHistory.remove(0);
+            }
+        }
+    }
+
+    private String extractTitle(String html) {
+        if (html == null || html.isBlank()) {
+            return "";
+        }
+        Matcher matcher = TITLE_PATTERN.matcher(html);
+        if (!matcher.find()) {
+            return "";
+        }
+        return matcher.group(1)
+                .replaceAll("(?is)<[^>]+>", "")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .trim();
+    }
+
+    private void showAccessHistory() {
+        List<AccessHistoryEntry> snapshot;
+        synchronized (accessHistory) {
+            snapshot = new ArrayList<>(accessHistory);
+        }
+
+        if (snapshot.isEmpty()) {
+            JOptionPane.showMessageDialog(this,
+                    "Chưa có địa chỉ nào trong lịch sử truy cập.",
+                    "Lịch sử truy cập", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        DefaultListModel<String> model = new DefaultListModel<>();
+        for (int index = snapshot.size() - 1; index >= 0; index--) {
+            AccessHistoryEntry entry = snapshot.get(index);
+            model.addElement(entry.visitedAt().format(HISTORY_TIME)
+                    + "  •  " + entry.title() + "  •  " + entry.url());
+        }
+
+        JList<String> historyList = new JList<>(model);
+        historyList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        historyList.setSelectedIndex(0);
+        JScrollPane scrollPane = new JScrollPane(historyList);
+        scrollPane.setPreferredSize(new Dimension(760, 340));
+
+        Object[] options = {"Mở lại", "Xóa lịch sử", "Đóng"};
+        int option = JOptionPane.showOptionDialog(this, scrollPane,
+                "Lịch sử truy cập (" + snapshot.size() + " địa chỉ)",
+                JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE,
+                null, options, options[0]);
+
+        if (option == 0 && historyList.getSelectedIndex() >= 0) {
+            int snapshotIndex = snapshot.size() - 1 - historyList.getSelectedIndex();
+            String selectedUrl = snapshot.get(snapshotIndex).url();
+            Platform.runLater(() -> engine.load(selectedUrl));
+        } else if (option == 1) {
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "Bạn có chắc muốn xóa toàn bộ lịch sử truy cập?",
+                    "Xác nhận xóa", JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE);
+            if (confirm == JOptionPane.YES_OPTION) {
+                synchronized (accessHistory) {
+                    accessHistory.clear();
+                }
+            }
         }
     }
 
@@ -348,6 +470,13 @@ final class WebPreviewPanel extends JPanel {
         JOptionPane.showMessageDialog(this,
                 "Không thể tải hình ảnh.\n" + message,
                 "Tải ảnh thất bại", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private record AccessHistoryEntry(
+            LocalDateTime visitedAt,
+            String title,
+            String url
+    ) {
     }
 
     private String prepareHtml(String html, String baseUrl) {
