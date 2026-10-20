@@ -1,9 +1,11 @@
 package vn.edu.network.client;
 
 import javafx.application.Platform;
+import javafx.collections.ListChangeListener;
 import javafx.embed.swing.JFXPanel;
 import javafx.scene.Scene;
 import javafx.scene.web.WebEngine;
+import javafx.scene.web.WebHistory;
 import javafx.scene.web.WebView;
 
 import javax.swing.JButton;
@@ -38,6 +40,8 @@ final class WebPreviewPanel extends JPanel {
 
     private final JFXPanel fxPanel = new JFXPanel();
     private final AtomicBoolean ready = new AtomicBoolean(false);
+    private final JButton backButton = new JButton("←");
+    private final JButton forwardButton = new JButton("→");
     private final JButton zoomValueButton = new JButton("100%");
     private volatile WebEngine engine;
     private volatile WebView webView;
@@ -56,6 +60,7 @@ final class WebPreviewPanel extends JPanel {
             webView = view;
             engine = view.getEngine();
             engine.setJavaScriptEnabled(true);
+            configureHistory();
             view.setZoom(zoom);
             fxPanel.setScene(new Scene(view));
             ready.set(true);
@@ -88,6 +93,18 @@ final class WebPreviewPanel extends JPanel {
     private JPanel buildZoomToolbar() {
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 5, 4));
 
+        backButton.setToolTipText("Quay lại trang trước (Alt+←)");
+        backButton.setMargin(new Insets(3, 10, 3, 10));
+        backButton.setFocusable(false);
+        backButton.setEnabled(false);
+        backButton.addActionListener(event -> navigateHistory(-1));
+
+        forwardButton.setToolTipText("Đi tới trang sau (Alt+→)");
+        forwardButton.setMargin(new Insets(3, 10, 3, 10));
+        forwardButton.setFocusable(false);
+        forwardButton.setEnabled(false);
+        forwardButton.addActionListener(event -> navigateHistory(1));
+
         JButton downloadImageButton = new JButton("Tải ảnh", ClientIcons.icon("image", 15));
         downloadImageButton.setToolTipText("Tải một hình ảnh đang hiển thị trên trang");
         downloadImageButton.setMargin(new Insets(3, 10, 3, 10));
@@ -111,6 +128,8 @@ final class WebPreviewPanel extends JPanel {
         zoomInButton.setFocusable(false);
         zoomInButton.addActionListener(event -> changeZoom(ZOOM_STEP));
 
+        toolbar.add(backButton);
+        toolbar.add(forwardButton);
         toolbar.add(downloadImageButton);
         toolbar.add(zoomOutButton);
         toolbar.add(zoomValueButton);
@@ -119,6 +138,12 @@ final class WebPreviewPanel extends JPanel {
     }
 
     private void configureZoomShortcuts() {
+        registerKeyboardAction(event -> navigateHistory(-1),
+                KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, InputEvent.ALT_DOWN_MASK),
+                JComponent.WHEN_IN_FOCUSED_WINDOW);
+        registerKeyboardAction(event -> navigateHistory(1),
+                KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, InputEvent.ALT_DOWN_MASK),
+                JComponent.WHEN_IN_FOCUSED_WINDOW);
         registerKeyboardAction(event -> changeZoom(ZOOM_STEP),
                 KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, InputEvent.CTRL_DOWN_MASK),
                 JComponent.WHEN_IN_FOCUSED_WINDOW);
@@ -134,6 +159,42 @@ final class WebPreviewPanel extends JPanel {
         registerKeyboardAction(event -> resetZoom(),
                 KeyStroke.getKeyStroke(KeyEvent.VK_0, InputEvent.CTRL_DOWN_MASK),
                 JComponent.WHEN_IN_FOCUSED_WINDOW);
+    }
+
+    private void configureHistory() {
+        WebHistory history = engine.getHistory();
+        history.currentIndexProperty().addListener(
+                (observable, oldValue, newValue) -> updateNavigationButtons());
+        history.getEntries().addListener(
+                (ListChangeListener<WebHistory.Entry>) change -> updateNavigationButtons());
+        updateNavigationButtons();
+    }
+
+    private void navigateHistory(int offset) {
+        if (!ready.get() || engine == null) {
+            return;
+        }
+        Platform.runLater(() -> {
+            WebHistory history = engine.getHistory();
+            int targetIndex = history.getCurrentIndex() + offset;
+            if (targetIndex >= 0 && targetIndex < history.getEntries().size()) {
+                history.go(offset);
+            }
+            updateNavigationButtons();
+        });
+    }
+
+    private void updateNavigationButtons() {
+        if (engine == null) {
+            return;
+        }
+        WebHistory history = engine.getHistory();
+        int currentIndex = history.getCurrentIndex();
+        int entryCount = history.getEntries().size();
+        SwingUtilities.invokeLater(() -> {
+            backButton.setEnabled(currentIndex > 0);
+            forwardButton.setEnabled(currentIndex >= 0 && currentIndex < entryCount - 1);
+        });
     }
 
     private void changeZoom(double amount) {
