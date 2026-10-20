@@ -87,12 +87,14 @@ final class WebPreviewPanel extends JPanel {
             configureHistory();
             configureImageContextMenu(view);
             engine.locationProperty().addListener(
-                    (observable, oldUrl, newUrl) -> notifyLocationChanged(newUrl));
+                    (observable, oldUrl, newUrl) -> handleLocationChanged(newUrl));
             engine.getLoadWorker().stateProperty().addListener(
                     (observable, oldState, newState) -> {
                         if (newState == Worker.State.SUCCEEDED) {
-                            recordHistory(engine.getLocation(), engine.getTitle());
-                            navigatingHistory = false;
+                            String finalUrl = engine.getLocation();
+                            finishHistoryNavigation(finalUrl);
+                            recordHistory(finalUrl, engine.getTitle());
+                            notifyLocationChanged(finalUrl);
                             updateNavigationButtons();
                         } else if (newState == Worker.State.FAILED
                                 || newState == Worker.State.CANCELLED) {
@@ -111,13 +113,58 @@ final class WebPreviewPanel extends JPanel {
         locationListener = listener == null ? url -> { } : listener;
     }
 
+    private boolean isNavigableUrl(String url) {
+        return url != null && !url.isBlank()
+                && !url.equals("about:blank")
+                && !url.startsWith("data:");
+    }
+
     private void notifyLocationChanged(String url) {
-        if (url == null || url.isBlank()
-                || url.equals("about:blank")
-                || url.startsWith("data:")) {
+        if (!isNavigableUrl(url)) {
             return;
         }
         SwingUtilities.invokeLater(() -> locationListener.accept(url));
+    }
+
+    private void handleLocationChanged(String url) {
+        if (!isNavigableUrl(url)) {
+            return;
+        }
+
+        notifyLocationChanged(url);
+        if (!navigatingHistory) {
+            addNavigationEntry(url);
+        }
+        updateNavigationButtons();
+    }
+
+    private void addNavigationEntry(String url) {
+        synchronized (navigationHistory) {
+            if (navigationIndex >= 0
+                    && navigationHistory.get(navigationIndex).equals(url)) {
+                return;
+            }
+            while (navigationHistory.size() > navigationIndex + 1) {
+                navigationHistory.remove(navigationHistory.size() - 1);
+            }
+            navigationHistory.add(url);
+            navigationIndex = navigationHistory.size() - 1;
+            if (navigationHistory.size() > MAX_HISTORY_ENTRIES) {
+                navigationHistory.remove(0);
+                navigationIndex--;
+            }
+        }
+    }
+
+    private void finishHistoryNavigation(String finalUrl) {
+        synchronized (navigationHistory) {
+            if (navigatingHistory && isNavigableUrl(finalUrl)
+                    && navigationIndex >= 0
+                    && navigationIndex < navigationHistory.size()) {
+                navigationHistory.set(navigationIndex, finalUrl);
+            }
+            navigatingHistory = false;
+        }
     }
 
     void showHtml(String html, String baseUrl) {
@@ -305,20 +352,8 @@ final class WebPreviewPanel extends JPanel {
             }
         }
 
-        synchronized (navigationHistory) {
-            if (!navigatingHistory
-                    && (navigationIndex < 0
-                    || !navigationHistory.get(navigationIndex).equals(url))) {
-                while (navigationHistory.size() > navigationIndex + 1) {
-                    navigationHistory.remove(navigationHistory.size() - 1);
-                }
-                navigationHistory.add(url);
-                navigationIndex = navigationHistory.size() - 1;
-                if (navigationHistory.size() > MAX_HISTORY_ENTRIES) {
-                    navigationHistory.remove(0);
-                    navigationIndex--;
-                }
-            }
+        if (!navigatingHistory) {
+            addNavigationEntry(url);
         }
         updateNavigationButtons();
     }
