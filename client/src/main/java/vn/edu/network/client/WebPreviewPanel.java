@@ -141,8 +141,8 @@ final class WebPreviewPanel extends JPanel {
         if (baseUrl == null || baseUrl.isBlank()) {
             return html;
         }
-        String escaped = baseUrl.replace("&", "&amp;").replace("\\\"", "&quot;");
-        String base = "<base href=\\\"" + escaped + "\\">";
+        String escaped = baseUrl.replace("&", "&amp;").replace("\"", "&quot;");
+        String base = "<base href=\"" + escaped + "\">";
         if (html.matches("(?is).*<head[^>]*>.*")) {
             return html.replaceFirst("(?i)<head([^>]*)>", "<head$1>" + base);
         }
