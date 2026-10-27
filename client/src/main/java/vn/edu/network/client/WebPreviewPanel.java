@@ -88,6 +88,9 @@ final class WebPreviewPanel extends JPanel {
             configureImageContextMenu(view);
             engine.locationProperty().addListener(
                     (observable, oldUrl, newUrl) -> handleLocationChanged(newUrl));
+            engine.titleProperty().addListener(
+                    (observable, oldTitle, newTitle) ->
+                            updateHistoryTitle(engine.getLocation(), newTitle));
             engine.getLoadWorker().stateProperty().addListener(
                     (observable, oldState, newState) -> {
                         if (newState == Worker.State.SUCCEEDED) {
@@ -132,10 +135,24 @@ final class WebPreviewPanel extends JPanel {
         }
 
         notifyLocationChanged(url);
-        if (!navigatingHistory) {
-            addNavigationEntry(url);
+        // Record the visit as soon as navigation starts; page assets may load much later.
+        recordHistory(url, url);
+    }
+
+    private void updateHistoryTitle(String url, String title) {
+        if (!isNavigableUrl(url) || title == null || title.isBlank()) {
+            return;
         }
-        updateNavigationButtons();
+        synchronized (accessHistory) {
+            for (int index = accessHistory.size() - 1; index >= 0; index--) {
+                AccessHistoryEntry entry = accessHistory.get(index);
+                if (entry.url().equals(url)) {
+                    accessHistory.set(index, new AccessHistoryEntry(
+                            entry.visitedAt(), title.replaceAll("\\\\s+", " ").trim(), url));
+                    break;
+                }
+            }
+        }
     }
 
     private void addNavigationEntry(String url) {
@@ -349,6 +366,10 @@ final class WebPreviewPanel extends JPanel {
                 if (accessHistory.size() > MAX_HISTORY_ENTRIES) {
                     accessHistory.remove(0);
                 }
+            } else if (!normalizedTitle.equals(url)) {
+                AccessHistoryEntry latest = accessHistory.get(accessHistory.size() - 1);
+                accessHistory.set(accessHistory.size() - 1,
+                        new AccessHistoryEntry(latest.visitedAt(), normalizedTitle, url));
             }
         }
 
