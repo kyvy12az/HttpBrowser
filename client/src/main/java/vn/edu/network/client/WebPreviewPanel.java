@@ -32,22 +32,33 @@ import java.awt.Insets;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class WebPreviewPanel extends JPanel {
+    private static final Logger LOGGER = Logger.getLogger(WebPreviewPanel.class.getName());
+    private static final Path HISTORY_FILE = Path.of(
+            System.getProperty("user.home"), ".simple-http-browser", "history.tsv");
     private static final double MIN_ZOOM = 0.5;
     private static final double MAX_ZOOM = 2.0;
     private static final double ZOOM_STEP = 0.1;
@@ -77,6 +88,7 @@ final class WebPreviewPanel extends JPanel {
         add(buildZoomToolbar(), BorderLayout.NORTH);
         add(fxPanel, BorderLayout.CENTER);
         configureZoomShortcuts();
+        loadSavedHistory();
 
         Platform.setImplicitExit(false);
         Platform.runLater(() -> {
@@ -143,12 +155,16 @@ final class WebPreviewPanel extends JPanel {
         if (!isNavigableUrl(url) || title == null || title.isBlank()) {
             return;
         }
+        String normalizedTitle = title.replaceAll("\\s+", " ").trim();
         synchronized (accessHistory) {
             for (int index = accessHistory.size() - 1; index >= 0; index--) {
                 AccessHistoryEntry entry = accessHistory.get(index);
                 if (entry.url().equals(url)) {
-                    accessHistory.set(index, new AccessHistoryEntry(
-                            entry.visitedAt(), title.replaceAll("\\s+", " ").trim(), url));
+                    if (!entry.title().equals(normalizedTitle)) {
+                        accessHistory.set(index, new AccessHistoryEntry(
+                                entry.visitedAt(), normalizedTitle, url));
+                        saveHistory();
+                    }
                     break;
                 }
             }
@@ -366,10 +382,14 @@ final class WebPreviewPanel extends JPanel {
                 if (accessHistory.size() > MAX_HISTORY_ENTRIES) {
                     accessHistory.remove(0);
                 }
+                saveHistory();
             } else if (!normalizedTitle.equals(url)) {
                 AccessHistoryEntry latest = accessHistory.get(accessHistory.size() - 1);
-                accessHistory.set(accessHistory.size() - 1,
-                        new AccessHistoryEntry(latest.visitedAt(), normalizedTitle, url));
+                if (!latest.title().equals(normalizedTitle)) {
+                    accessHistory.set(accessHistory.size() - 1,
+                            new AccessHistoryEntry(latest.visitedAt(), normalizedTitle, url));
+                    saveHistory();
+                }
             }
         }
 
@@ -446,6 +466,7 @@ final class WebPreviewPanel extends JPanel {
             if (confirm == JOptionPane.YES_OPTION) {
                 synchronized (accessHistory) {
                     accessHistory.clear();
+                    saveHistory();
                 }
             }
         }
@@ -630,6 +651,71 @@ final class WebPreviewPanel extends JPanel {
         JOptionPane.showMessageDialog(this,
                 "Không thể tải hình ảnh.\n" + message,
                 "Tải ảnh thất bại", JOptionPane.ERROR_MESSAGE);
+    }
+
+    private void loadSavedHistory() {
+        if (!Files.exists(HISTORY_FILE)) {
+            return;
+        }
+        try {
+            for (String line : Files.readAllLines(HISTORY_FILE, StandardCharsets.UTF_8)) {
+                String[] fields = line.split("\t", 3);
+                if (fields.length != 3) {
+                    continue;
+                }
+                try {
+                    String title = new String(Base64.getUrlDecoder().decode(fields[1]),
+                            StandardCharsets.UTF_8);
+                    String url = new String(Base64.getUrlDecoder().decode(fields[2]),
+                            StandardCharsets.UTF_8);
+                    if (url.startsWith("https://") || url.startsWith("http://")) {
+                        accessHistory.add(new AccessHistoryEntry(
+                                LocalDateTime.parse(fields[0]), title, url));
+                        if (accessHistory.size() > MAX_HISTORY_ENTRIES) {
+                            accessHistory.remove(0);
+                        }
+                    }
+                } catch (IllegalArgumentException malformedEntry) {
+                    LOGGER.log(Level.WARNING, "Skipping an invalid history entry", malformedEntry);
+                }
+            }
+        } catch (IOException exception) {
+            LOGGER.log(Level.WARNING, "Unable to read browsing history", exception);
+        }
+    }
+
+    // Called while holding accessHistory's monitor so writes stay in visit order.
+    private void saveHistory() {
+        Path temporary = null;
+        try {
+            Files.createDirectories(HISTORY_FILE.getParent());
+            temporary = Files.createTempFile(HISTORY_FILE.getParent(), "history-", ".tmp");
+            List<String> lines = new ArrayList<>(accessHistory.size());
+            Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
+            for (AccessHistoryEntry entry : accessHistory) {
+                lines.add(entry.visitedAt() + "\t"
+                        + encoder.encodeToString(entry.title().getBytes(StandardCharsets.UTF_8))
+                        + "\t"
+                        + encoder.encodeToString(entry.url().getBytes(StandardCharsets.UTF_8)));
+            }
+            Files.write(temporary, lines, StandardCharsets.UTF_8);
+            try {
+                Files.move(temporary, HISTORY_FILE,
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException exception) {
+                Files.move(temporary, HISTORY_FILE, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException exception) {
+            LOGGER.log(Level.WARNING, "Unable to save browsing history", exception);
+        } finally {
+            if (temporary != null) {
+                try {
+                    Files.deleteIfExists(temporary);
+                } catch (IOException exception) {
+                    LOGGER.log(Level.FINE, "Unable to remove temporary history file", exception);
+                }
+            }
+        }
     }
 
     private record AccessHistoryEntry(
