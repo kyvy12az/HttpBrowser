@@ -148,7 +148,7 @@ final class WebPreviewPanel extends JPanel {
                 AccessHistoryEntry entry = accessHistory.get(index);
                 if (entry.url().equals(url)) {
                     accessHistory.set(index, new AccessHistoryEntry(
-                            entry.visitedAt(), title.replaceAll("\\\\s+", " ").trim(), url));
+                            entry.visitedAt(), title.replaceAll("\\s+", " ").trim(), url));
                     break;
                 }
             }
