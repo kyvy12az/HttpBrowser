@@ -381,41 +381,47 @@ final class WebPreviewPanel extends JPanel {
             snapshot = new ArrayList<>(accessHistory);
         }
 
-        if (snapshot.isEmpty()) {
-            JOptionPane.showMessageDialog(this,
-                    "Chưa có địa chỉ nào trong lịch sử truy cập.",
-                    "Lịch sử truy cập", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-
         DefaultListModel<String> model = new DefaultListModel<>();
-        for (int index = snapshot.size() - 1; index >= 0; index--) {
-            AccessHistoryEntry entry = snapshot.get(index);
-            model.addElement(entry.visitedAt().format(HISTORY_TIME)
-                    + "  •  " + entry.title() + "  •  " + entry.url());
+        if (snapshot.isEmpty()) {
+            model.addElement("Chưa có địa chỉ nào trong lịch sử truy cập.");
+        } else {
+            for (int index = snapshot.size() - 1; index >= 0; index--) {
+                AccessHistoryEntry entry = snapshot.get(index);
+                model.addElement(entry.visitedAt().format(HISTORY_TIME)
+                        + "  •  " + entry.title() + "  •  " + entry.url());
+            }
         }
 
         JList<String> historyList = new JList<>(model);
         historyList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        historyList.setSelectedIndex(0);
+        if (!snapshot.isEmpty()) {
+            historyList.setSelectedIndex(0);
+        }
+
         JScrollPane scrollPane = new JScrollPane(historyList);
         scrollPane.setPreferredSize(new Dimension(760, 340));
 
         Object[] options = {"Mở lại", "Xóa lịch sử", "Đóng"};
-        int option = JOptionPane.showOptionDialog(this, scrollPane,
+        int option = JOptionPane.showOptionDialog(
+                this, scrollPane,
                 "Lịch sử truy cập (" + snapshot.size() + " địa chỉ)",
                 JOptionPane.DEFAULT_OPTION, JOptionPane.PLAIN_MESSAGE,
-                null, options, options[0]);
+                null, options, options[2]
+        );
 
-        if (option == 0 && historyList.getSelectedIndex() >= 0) {
+        if (option == 0 && !snapshot.isEmpty()
+                && historyList.getSelectedIndex() >= 0) {
             int snapshotIndex = snapshot.size() - 1 - historyList.getSelectedIndex();
             String selectedUrl = snapshot.get(snapshotIndex).url();
             Platform.runLater(() -> engine.load(selectedUrl));
-        } else if (option == 1) {
-            int confirm = JOptionPane.showConfirmDialog(this,
+        } else if (option == 1 && !snapshot.isEmpty()) {
+            int confirm = JOptionPane.showConfirmDialog(
+                    this,
                     "Bạn có chắc muốn xóa toàn bộ lịch sử truy cập?",
-                    "Xác nhận xóa", JOptionPane.YES_NO_OPTION,
-                    JOptionPane.WARNING_MESSAGE);
+                    "Xác nhận xóa",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE
+            );
             if (confirm == JOptionPane.YES_OPTION) {
                 synchronized (accessHistory) {
                     accessHistory.clear();

@@ -16,7 +16,7 @@ final class BrowserFrame extends JFrame {
     private static final Color GREEN = new Color(22, 163, 74);
     private static final Color RED = new Color(220, 38, 38);
 
-    private final ServerConnection connection = new ServerConnection("10.60.26.174", 9090);
+    private final ServerConnection connection = new ServerConnection("10.60.4.27", 9090);
     private final JTextField urlField = new JTextField("https://example.com");
     private final JComboBox<HttpMethodType> methodBox = new JComboBox<>(
             new HttpMethodType[]{HttpMethodType.GET, HttpMethodType.POST, HttpMethodType.HEAD});
