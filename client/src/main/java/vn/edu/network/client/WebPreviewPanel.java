@@ -42,6 +42,7 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -675,7 +676,7 @@ final class WebPreviewPanel extends JPanel {
                             accessHistory.remove(0);
                         }
                     }
-                } catch (IllegalArgumentException malformedEntry) {
+                } catch (DateTimeException | IllegalArgumentException malformedEntry) {
                     LOGGER.log(Level.WARNING, "Skipping an invalid history entry", malformedEntry);
                 }
             }
